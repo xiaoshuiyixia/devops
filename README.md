@@ -2,6 +2,8 @@
 
 独立运行的 Spring Boot 3.5.7 项目，使用 Java 21、Maven 和 JUnit 5。提供 `GET /hello`，返回 HTTP 200、`text/plain` 和 `Hello, DevOps!`。
 
+另提供 `GET /greet?name=Alice`，返回 HTTP 200 和 JSON `{"message":"Hello, Alice!"}`。省略 `name` 时使用 `World`；名字两端空白会被去除，空字符串或纯空白名字返回 HTTP 400，支持中文名字。
+
 ## 本地环境
 
 - JDK 21（不是只有 JRE），`JAVA_HOME` 指向 JDK 目录。
@@ -33,6 +35,7 @@ java -jar target/app.jar
 
 ```powershell
 curl.exe -i http://localhost:8080/hello
+curl.exe -i "http://localhost:8080/greet?name=Alice"
 ```
 
 没有全局 Maven 时，Windows 使用 `.\mvnw.cmd clean verify`，macOS/Linux 使用 `sh mvnw clean verify`。Wrapper 同样要求本机配置 JDK 21。
@@ -46,13 +49,16 @@ curl.exe -i http://localhost:8080/hello
 ├── .mvn/wrapper/                   # Maven 下载版本
 ├── src/main/java/com/example/devops/
 │   ├── DevOpsApplication.java      # Spring Boot 启动入口
-│   └── HelloController.java        # GET /hello
+│   ├── HelloController.java        # GET /hello
+│   └── GreetingController.java     # GET /greet?name=Alice
 ├── src/main/resources/
 │   └── application.properties     # 应用名称
 ├── src/test/java/com/example/devops/
 │   ├── HelloControllerTest.java    # 普通单元测试
 │   ├── DevOpsApplicationTests.java # Spring 上下文启动测试
-│   └── HelloEndpointIT.java        # 真实 HTTP 集成测试
+│   ├── HelloEndpointIT.java        # /hello 真实 HTTP 集成测试
+│   └── GreetingEndpointIT.java     # /greet 参数和 JSON 响应测试
+├── .github/workflows/ci.yml        # Maven CI 与 GHCR 镜像发布
 ├── Dockerfile                      # 多阶段镜像构建
 └── .dockerignore                   # 仅发送构建所需的源码与 POM
 ```
@@ -65,6 +71,7 @@ curl.exe -i http://localhost:8080/hello
 
 - Maven Surefire 在 `test` 阶段运行 `*Test` 和 `*Tests`：检查控制器返回值，以及 Spring 上下文能否启动。
 - Maven Failsafe 在 `integration-test` 阶段运行 `*IT`，在 `verify` 阶段判断结果。`HelloEndpointIT` 启动完整应用和内嵌 Tomcat，使用随机空闲端口发送真实 HTTP 请求，检查 `/hello` 的状态码、响应体、内容类型，以及不存在路径的 404。
+- `GreetingEndpointIT` 同样通过真实 HTTP 验证默认名字、自定义名字、去除两端空白、中文名字、JSON 内容类型和空白参数的 400 响应。包含参数化测试后，项目共执行 11 项测试。
 - `mvn clean verify` 依次清理旧产物、编译、执行单元测试、打包可执行 JAR、执行集成测试并检查结果；任何测试失败都会导致命令失败。
 - `mvn test` 只执行前两类测试；完整验证请使用 `mvn clean verify`。报告位于 `target/surefire-reports/` 和 `target/failsafe-reports/`。
 
@@ -88,14 +95,22 @@ docker stop devops-learning
 3. `runtime` 阶段使用 Java 21 JRE 镜像，只从构建阶段复制 `app.jar`。Maven、测试源码和编译缓存不会进入最终镜像。
 4. 容器以 UID/GID `10001:10001` 的非 root 用户执行 `java -jar /app/app.jar`。`EXPOSE 8080` 是端口声明；`docker run -p` 才会将端口映射到本机。
 
-本阶段只包含本地应用、测试和 Docker 构建，不依赖数据库或外部服务。
+应用可独立运行，不依赖数据库或外部服务。
+
+## GitHub Actions 与 GHCR
+
+- 推送到 `master`、创建或更新目标为 `master` 的 PR 时运行 `verify`，也支持通过 Actions 页面的 `Run workflow` 手动验证。
+- `verify` 使用 Java 21 执行 `mvn clean verify`，并尝试上传 Surefire / Failsafe 测试报告。在本次运行的 `Summary` 页面的 `Artifacts` 中下载 `test-reports`。
+- 仅在推送到 `master` 且 `verify` 成功后运行 `docker`，构建镜像并通过自动提供的 `GITHUB_TOKEN` 发布到 GHCR。PR 和手动验证不发布镜像。
+- 镜像名称是小写的 `ghcr.io/<仓库所有者>/<仓库名称>`，标签为 `latest` 和完整的提交 SHA。发布任务具备 `packages: write` 权限。
 
 ## 已完成的本地验证
 
 2026-11-06 在 Windows / JDK 21 / Docker Desktop Linux 引擎上实际验证：
 
-- 本机 `mvn clean verify` 成功：4 项测试，0 失败、0 错误、0 跳过。
+- 本机 `mvn clean verify` 成功：11 项测试，0 失败、0 错误、0 跳过。
 - `.\mvnw.cmd --version` 成功，使用 Maven 3.9.11 和 Java 21。
-- `docker build -t devops-learning:local .` 成功，镜像构建阶段也完整执行了 4 项测试。
+- `docker build -t devops-learning:local .` 成功，镜像构建阶段也完整执行了 11 项测试。
 - 启动最终镜像并通过本机映射端口请求 `/hello`，得到 HTTP 200、`text/plain;charset=UTF-8` 和 `Hello, DevOps!`。
+- 新接口通过最终镜像的本机 `18080:8080` 映射端口验证：`GET /greet?name=Alice` 成功返回 `{"message":"Hello, Alice!"}`。
 - 容器内 `id` 确认运行用户为 `uid=10001 gid=10001`；验证用容器已停止。
